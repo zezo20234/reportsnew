@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Manage Reports with AI</title>
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#2b4c7e" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    max-width: 900px;
+    margin: 20px auto;
+    padding: 10px;
+    background: #f7f9fc;
+    color: #222;
+  }
+  h1 {
+    color: #2b4c7e;
+    text-align: center;
+  }
+  .ai-toggle {
+    text-align: center;
+    margin-bottom: 15px;
+  }
+  .ai-toggle button {
+    background-color: #2980b9;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: bold;
+  }
+  .ai-toggle button:hover {
+    background-color: #1f6391;
+  }
+  .report {
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    padding: 15px;
+    margin-bottom: 15px;
+    position: relative;
+  }
+  .report-header {
+    font-weight: bold;
+    margin-bottom: 8px;
+  }
+  .rules-list {
+    margin-left: 15px;
+    margin-bottom: 8px;
+  }
+  .rules-list li {
+    margin-bottom: 4px;
+  }
+  .buttons {
+    margin-top: 10px;
+  }
+  button {
+    background-color: #2b4c7e;
+    color: white;
+    border: none;
+    padding: 8px 14px;
+    margin-right: 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-weight: bold;
+  }
+  button:hover:not(:disabled) {
+    background-color: #1f3557;
+  }
+  button:disabled {
+    background-color: #999;
+    cursor: default;
+  }
+  .status {
+    font-weight: bold;
+    margin-top: 6px;
+    position: absolute;
+    right: 15px;
+    top: 15px;
+  }
+  .status.accepted { color: green; }
+  .status.declined { color: red; }
+  .timestamp {
+    font-size: 0.85rem;
+    color: #555;
+  }
+</style>
+</head>
+<body>
+
+<h1>Reports Management with AI</h1>
+
+<div class="ai-toggle">
+  AI is <span id="aiStatus">OFF</span> 
+  <button id="toggleAIBtn">Turn AI ON</button>
+</div>
+
+<div id="reportsContainer">Loading reports...</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getDatabase, ref, get, update, remove, push } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAjeXycCBhYoAU-0iiC4LbSTylKrrThN8Y",
+  authDomain: "sharplabubu.firebaseapp.com",
+  databaseURL: "https://sharplabubu-default-rtdb.firebaseio.com",
+  projectId: "sharplabubu",
+  storageBucket: "sharplabubu.firebasestorage.app",
+  messagingSenderId: "596148393481",
+  appId: "1:596148393481:web:4f822d86c44a13bd810ad8",
+  measurementId: "G-4M25R3BF08"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+const reportsContainer = document.getElementById("reportsContainer");
+const aiStatusSpan = document.getElementById("aiStatus");
+const toggleAIBtn = document.getElementById("toggleAIBtn");
+
+let aiOn = false;
+let autoRefreshInterval = null;
+
+toggleAIBtn.addEventListener("click", () => {
+  aiOn = !aiOn;
+  saveAIState();
+  updateAIToggleUI();
+  if (aiOn) {
+    runAIOnPendingReports();
+  }
+});
+
+// Save AI toggle state in localStorage
+function saveAIState() {
+  localStorage.setItem("aiOn", aiOn ? "true" : "false");
+}
+// Load AI toggle state from localStorage
+function loadAIState() {
+  const stored = localStorage.getItem("aiOn");
+  aiOn = stored === "true";
+}
+
+function updateAIToggleUI() {
+  aiStatusSpan.textContent = aiOn ? "ON" : "OFF";
+  toggleAIBtn.textContent = aiOn ? "Turn AI OFF" : "Turn AI ON";
+}
+
+// Format timestamp
+function formatDate(ts) {
+  const d = new Date(ts);
+  return d.toLocaleString();
+}
+
+async function loadReports() {
+  try {
+    const reportsSnap = await get(ref(db, "reports"));
+    if (!reportsSnap.exists()) {
+      reportsContainer.textContent = "No reports found.";
+      return;
+    }
+
+    const reports = reportsSnap.val();
+    reportsContainer.innerHTML = "";
+
+    let hasPending = false;
+
+    for (const [reportId, report] of Object.entries(reports)) {
+      // Skip if report already accepted/declined
+      if (report.status) continue;
+
+      hasPending = true;
+      const div = document.createElement("div");
+      div.className = "report";
+      div.dataset.reportId = reportId;
+
+      let rulesHtml = "<ul class='rules-list'>";
+      if (Array.isArray(report.brokenRules)) {
+        report.brokenRules.forEach(rule => {
+          rulesHtml += `<li><strong>${rule.title}</strong> x${rule.qty} → ${rule.totalDays} days</li>`;
+        });
+      } else {
+        rulesHtml += "<li><em>No broken rules data</em></li>";
+      }
+      rulesHtml += "</ul>";
+
+      div.innerHTML = `
+        <div class="report-header">
+          Reporter: <strong>${report.reporter}</strong> | Reported User: <strong>${report.reportedUser}</strong><br/>
+          Total Days Penalty: <strong>${report.totalDays || 0}</strong><br/>
+          <span class="timestamp">Submitted: ${formatDate(report.timestamp)}</span>
+        </div>
+        ${rulesHtml}
+        <div class="buttons">
+          <button class="acceptBtn">Accept</button>
+          <button class="declineBtn">Decline</button>
+        </div>
+        <span class="status"></span>
+      `;
+
+      // Accept button click
+      div.querySelector(".acceptBtn").onclick = () => handleReportAction(reportId, report, "accepted", div);
+      // Decline button click
+      div.querySelector(".declineBtn").onclick = () => handleReportAction(reportId, report, "declined", div);
+
+      reportsContainer.appendChild(div);
+    }
+
+    if (!hasPending) {
+      reportsContainer.textContent = "No pending reports.";
+    }
+
+    if (aiOn) {
+      runAIOnPendingReports();
+    }
+
+  } catch (err) {
+    reportsContainer.textContent = "Error loading reports: " + err.message;
+  }
+}
+
+// Move report to reportsBasket and remove from reports
+async function moveReportToBasket(reportId, report, status) {
+  const basketRef = ref(db, `reportsBasket/${reportId}`);
+  const dataToMove = { ...report, status, movedAt: Date.now() };
+
+  await update(basketRef, dataToMove);
+  await remove(ref(db, `reports/${reportId}`));
+}
+
+// Handle accept/decline logic including move to basket and update user days if accepted
+async function handleReportAction(reportId, report, action, containerDiv) {
+  const statusSpan = containerDiv.querySelector(".status");
+  const acceptBtn = containerDiv.querySelector(".acceptBtn");
+  const declineBtn = containerDiv.querySelector(".declineBtn");
+
+  // Disable buttons while processing
+  acceptBtn.disabled = true;
+  declineBtn.disabled = true;
+  statusSpan.textContent = action === "accepted" ? "Accepting..." : "Declining...";
+
+  try {
+    if (action === "accepted") {
+      const userRef = ref(db, `users/${report.reportedUser}`);
+      const userSnap = await get(userRef);
+      if (!userSnap.exists()) {
+        statusSpan.textContent = "Reported user not found.";
+        return;
+      }
+      const userData = userSnap.val();
+      const newDays = (userData.days || 0) + (report.totalDays || 0);
+      await update(userRef, { days: newDays });
+    }
+    await moveReportToBasket(reportId, report, action);
+
+    statusSpan.textContent = action === "accepted" ? "Accepted and moved ✅" : "Declined and moved ❌";
+
+    setTimeout(() => {
+      containerDiv.remove();
+      if (reportsContainer.children.length === 0) {
+        reportsContainer.textContent = "No pending reports.";
+      }
+    }, 1500);
+
+  } catch (err) {
+    statusSpan.textContent = "Error: " + err.message;
+    acceptBtn.disabled = false;
+    declineBtn.disabled = false;
+  }
+}
+
+// AI function: runs on all pending reports and randomly accepts (80%) or declines (20%)
+async function runAIOnPendingReports() {
+  const reportDivs = [...reportsContainer.querySelectorAll(".report")];
+
+  for (const div of reportDivs) {
+    if (div.querySelector(".acceptBtn").disabled) continue;
+
+    const reportId = div.dataset.reportId;
+    const reportSnap = await get(ref(db, `reports/${reportId}`));
+    if (!reportSnap.exists()) {
+      div.remove();
+      continue;
+    }
+    const report = reportSnap.val();
+
+    const action = Math.random() < 0.8 ? "accepted" : "declined";
+
+    await new Promise(r => setTimeout(r, 1500));
+
+    await handleReportAction(reportId, report, action, div);
+  }
+}
+
+// Start auto refresh every 5 seconds
+function startAutoRefresh() {
+  if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+  autoRefreshInterval = setInterval(() => {
+    loadReports();
+  }, 5000);
+}
+
+// Initialization
+function init() {
+  loadAIState();
+  updateAIToggleUI();
+  loadReports();
+  startAutoRefresh();
+  if (aiOn) {
+    // Run AI on current reports immediately on load
+    runAIOnPendingReports();
+  }
+}
+
+init();
+
+</script>
+
+</body>
+</html>
